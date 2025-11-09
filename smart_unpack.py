@@ -35,32 +35,81 @@ def extract_tar(file_path, out_dir):
 
 def extract_from_exe(file_path, out_dir):
     print("尝试从exe二进制中提取asar...")
+    # Use streaming to avoid loading entire file into memory
+    chunk_size = 1024 * 1024  # 1MB chunks
+    search_pattern = b'{"files":'
+    buffer = b''
+    offset = 0
+    found_idx = -1
+    
     with open(file_path, "rb") as f:
-        data = f.read()
-    idx = data.find(b'{"files":')
-    if idx != -1:
-        asar_start = max(0, idx - 16)
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            
+            # Search in buffer + new chunk
+            search_data = buffer + chunk
+            idx = search_data.find(search_pattern)
+            
+            if idx != -1:
+                found_idx = offset + idx
+                break
+            
+            # Keep last portion of buffer for pattern that might span chunks
+            buffer = search_data[-len(search_pattern):]
+            offset += len(chunk)
+    
+    if found_idx != -1:
+        asar_start = max(0, found_idx - 16)
         out_file = os.path.join(out_dir, "extracted.asar")
-        with open(out_file, "wb") as nf:
-            nf.write(data[asar_start:])
+        
+        # Stream the extraction
+        with open(file_path, "rb") as f:
+            f.seek(asar_start)
+            with open(out_file, "wb") as nf:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    nf.write(chunk)
+        
         extract_asar(out_file, os.path.join(out_dir, "from_asar"))
     else:
         print("未找到asar头部，请手动分析。")
 
 def format_code(root_dir):
+    # Collect files by type for batch processing
+    js_files = []
+    prettier_files = []
+    
     for subdir, _, files in os.walk(root_dir):
         for file in files:
             path = os.path.join(subdir, file)
             if file.endswith('.js'):
-                subprocess.run(["js-beautify", "-r", path])
-            elif file.endswith('.json'):
-                subprocess.run(["prettier", "--write", path])
-            elif file.endswith('.ts'):
-                subprocess.run(["prettier", "--write", path])
-            elif file.endswith('.css'):
-                subprocess.run(["prettier", "--write", path])
-            elif file.endswith('.html'):
-                subprocess.run(["prettier", "--write", path])
+                js_files.append(path)
+            elif file.endswith(('.json', '.ts', '.css', '.html')):
+                prettier_files.append(path)
+    
+    # Batch process JS files
+    if js_files:
+        print(f"Formatting {len(js_files)} JS files...")
+        try:
+            subprocess.run(["js-beautify", "-r"] + js_files, check=True)
+        except FileNotFoundError:
+            print("Warning: js-beautify not found. Please install it: npm install -g js-beautify")
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: js-beautify failed: {e}")
+    
+    # Batch process prettier files
+    if prettier_files:
+        print(f"Formatting {len(prettier_files)} files with prettier...")
+        try:
+            subprocess.run(["prettier", "--write"] + prettier_files, check=True)
+        except FileNotFoundError:
+            print("Warning: prettier not found. Please install it: npm install -g prettier")
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: prettier failed: {e}")
 
 def main(pkg_path):
     workdir = "./unpack_result"
